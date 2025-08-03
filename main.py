@@ -1,81 +1,78 @@
-from fastapi import FastAPI, Request, Form
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
 import sqlite3
-import smtplib
-from email.message import EmailMessage
+import csv
+import io
 
-app = FastAPI()
+app = Flask(__name__)
+CORS(app)
 
-# Allow frontend access
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# Initialize SQLite database
 def init_db():
     conn = sqlite3.connect("submissions.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS submissions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            email TEXT,
-            message TEXT
-        )
-    """)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        electricity REAL,
+        travel REAL,
+        waste REAL,
+        total_carbon REAL,
+        category TEXT
+    )''')
     conn.commit()
     conn.close()
 
 init_db()
 
-class Submission(BaseModel):
-    name: str
-    email: str
-    message: str
+@app.route("/calculate", methods=["POST"])
+def calculate():
+    data = request.get_json()
+    electricity = float(data.get("electricity", 0))
+    travel = float(data.get("travel", 0))
+    waste = float(data.get("waste", 0))
 
-@app.post("/submit")
-def submit_form(data: Submission):
+    total_carbon = round((electricity * 0.5 + travel * 0.2 + waste * 0.1), 2)
+
+    if total_carbon < 100:
+        category = "Low"
+    elif total_carbon < 300:
+        category = "Moderate"
+    else:
+        category = "High"
+
+    # Save to database
     conn = sqlite3.connect("submissions.db")
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO submissions (name, email, message) VALUES (?, ?, ?)", 
-                   (data.name, data.email, data.message))
+    cursor.execute(
+        '''INSERT INTO entries (electricity, travel, waste, total_carbon, category)
+           VALUES (?, ?, ?, ?, ?)''',
+        (electricity, travel, waste, total_carbon, category)
+    )
     conn.commit()
     conn.close()
 
-    try:
-        send_email(data.name, data.email, data.message)
-    except Exception as e:
-        print(f"Email failed: {e}")
+    return jsonify({
+        "totalCarbon": total_carbon,
+        "category": category
+    })
 
-    return {"message": "Data received and email sent!"}
+@app.route('/export', methods=['GET'])
+def export_data():
+    conn = sqlite3.connect("submissions.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM entries")
+    rows = cursor.fetchall()
+    conn.close()
 
-def send_email(name, to_email, msg_content):
-    EMAIL_ADDRESS = "your.email@gmail.com"
-    EMAIL_PASSWORD = "your_app_password"
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Electricity", "Travel", "Waste", "Total Carbon", "Category"])
+    writer.writerows(rows)
+    output.seek(0)
 
-    msg = EmailMessage()
-    msg["Subject"] = "EcoPilot Form Confirmation"
-    msg["From"] = EMAIL_ADDRESS
-    msg["To"] = to_email
-    msg.set_content(f"Hi {name},\n\nThanks for your submission:\n\n{msg_content}\n\n- EcoPilot Team")
+    return Response(output, mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment;filename=carbon_submissions.csv"})
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        smtp.send_message(msg)
+if __name__ == "__main__":
+    app.run(debug=True)
 
-# ✅ NEW: EcoScore Endpoint
-@app.post("/ecoscore")
-def get_eco_score(data: dict):
-    text = data.get("text", "").lower()
-    score = 100
-    if "plastic" in text:
-        score -= 20
-    if "shipped from abroad" in text or "air" in text:
-        score -= 30
-    if "eco" in text or "sustainable" in text:
-        score += 10
-    return {"score": max(0, min(score, 100))}
