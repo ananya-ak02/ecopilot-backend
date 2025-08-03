@@ -96,7 +96,13 @@ def hackrx_run():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ✅ --- Root Route ---
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({"message": "EcoPilot Flask backend is live"}), 200
+
 # --- Run Server ---
 if __name__ == '__main__':
     app.run(debug=True)
+
 
