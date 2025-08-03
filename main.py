@@ -1,78 +1,102 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import sqlite3
 import csv
-import io
+import os
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize SQLite database
+# --- DB Setup ---
+DB_NAME = 'submissions.db'
+
 def init_db():
-    conn = sqlite3.connect("submissions.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        electricity REAL,
-        travel REAL,
-        waste REAL,
-        total_carbon REAL,
-        category TEXT
-    )''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            carbon_footprint REAL NOT NULL,
+            suggestions TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
 
 init_db()
 
-@app.route("/calculate", methods=["POST"])
-def calculate():
-    data = request.get_json()
-    electricity = float(data.get("electricity", 0))
-    travel = float(data.get("travel", 0))
-    waste = float(data.get("waste", 0))
+# --- Main Submission Route ---
+@app.route('/submit', methods=['POST'])
+def submit_form():
+    try:
+        data = request.get_json()
 
-    total_carbon = round((electricity * 0.5 + travel * 0.2 + waste * 0.1), 2)
+        name = data.get('name')
+        email = data.get('email')
+        carbon = data.get('carbonFootprint')
+        suggestions = data.get('suggestions', '')
 
-    if total_carbon < 100:
-        category = "Low"
-    elif total_carbon < 300:
-        category = "Moderate"
-    else:
-        category = "High"
+        if not name or not email or carbon is None:
+            return jsonify({"error": "Missing required fields"}), 400
 
-    # Save to database
-    conn = sqlite3.connect("submissions.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        '''INSERT INTO entries (electricity, travel, waste, total_carbon, category)
-           VALUES (?, ?, ?, ?, ?)''',
-        (electricity, travel, waste, total_carbon, category)
-    )
-    conn.commit()
-    conn.close()
+        if float(carbon) < 0:
+            return jsonify({"error": "Carbon footprint cannot be negative"}), 400
 
-    return jsonify({
-        "totalCarbon": total_carbon,
-        "category": category
-    })
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO submissions (name, email, carbon_footprint, suggestions)
+            VALUES (?, ?, ?, ?)
+        ''', (name, email, carbon, suggestions))
+        conn.commit()
+        conn.close()
 
+        return jsonify({"message": "Submission saved successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Export CSV Route ---
 @app.route('/export', methods=['GET'])
-def export_data():
-    conn = sqlite3.connect("submissions.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM entries")
-    rows = cursor.fetchall()
-    conn.close()
+def export_csv():
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM submissions')
+        rows = cursor.fetchall()
+        conn.close()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["ID", "Electricity", "Travel", "Waste", "Total Carbon", "Category"])
-    writer.writerows(rows)
-    output.seek(0)
+        csv_file = 'submissions_export.csv'
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['ID', 'Name', 'Email', 'Carbon Footprint', 'Suggestions'])
+            writer.writerows(rows)
 
-    return Response(output, mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment;filename=carbon_submissions.csv"})
+        return send_file(csv_file, as_attachment=True)
 
-if __name__ == "__main__":
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- HackRx Webhook ---
+@app.route('/hackrx/run', methods=['POST'])
+def hackrx_run():
+    try:
+        data = request.get_json()
+
+        # Simulate a simple response or processing
+        response = {
+            "status": "success",
+            "message": "Received your HackRx test request.",
+            "echo": data  # Echo back the input for testing
+        }
+
+        return jsonify(response), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Run Server ---
+if __name__ == '__main__':
     app.run(debug=True)
 
